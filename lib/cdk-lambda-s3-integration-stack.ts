@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 // import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 export class CdkLambdaS3IntegrationStack extends cdk.Stack {
@@ -37,13 +38,19 @@ export class CdkLambdaS3IntegrationStack extends cdk.Stack {
         's3ReadWriteAccess': policyDocument,
       },
     });
+    s3LambdaRole.addManagedPolicy(cdk.aws_iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'));
 
     //create a lambda function
-    const getPresignUrlFunction = new cdk.aws_lambda.Function(this, 'MyLambdaFunction', {
-      runtime: cdk.aws_lambda.Runtime.NODEJS_LATEST,
-      code: cdk.aws_lambda.Code.fromAsset('lambda'),
+    const getPresignUrlFunction = new lambda.Function(this, 'S3PresignHelper', {
+      runtime: lambda.Runtime.NODEJS_LATEST,
+      code: lambda.Code.fromAsset('lambda', {
+        exclude: ['**/*.ts', '!**/*.d.ts'],
+      }),
       handler: 's3-presign-helper.handler',
-      role: s3LambdaRole
+      role: s3LambdaRole,
+      environment: {
+        'S3_BUCKET_NAME': s3Bucket.bucketName,
+      }
     });
 
     //create rest api with target as lambda
@@ -55,7 +62,33 @@ export class CdkLambdaS3IntegrationStack extends cdk.Stack {
       },
     });
 
-    const getPresign = s3PresignApi.root.addResource('s3PresigntoGet');
-    getPresign.addMethod('GET');
+    const methodResponse: apigw.MethodResponse = {
+      statusCode: "200", 
+      responseModels: {"application/json": apigw.Model.EMPTY_MODEL}
+    }
+    
+    const integrationResponse: apigw.IntegrationResponse = {
+      statusCode: "200",
+      contentHandling: apigw.ContentHandling.CONVERT_TO_TEXT
+    }
+
+    const requestTemplate = {
+      "key" : "$input.params('filename')"
+    }
+
+    const getPresinedUrlGet = new apigw.LambdaIntegration(getPresignUrlFunction, {
+      allowTestInvoke: true,
+      proxy: false,
+      integrationResponses: [integrationResponse],
+      passthroughBehavior: apigw.PassthroughBehavior.WHEN_NO_TEMPLATES,
+      requestTemplates: { "application/json": JSON.stringify(requestTemplate) },
+    });
+    
+    s3PresignApi.root.addMethod('GET', getPresinedUrlGet, {methodResponses: [methodResponse],
+      requestParameters: {
+        "method.request.querystring.filename": true
+      }
+     });
+
   }
 }
